@@ -1,0 +1,123 @@
+services:
+  app:
+    build:
+      context: .
+      target: app
+    environment:
+      HTTP_ADDR: :8080
+      MYSQL_DSN: ${MYSQL_USER:-secunda}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@tcp(mysql:3306)/${MYSQL_DATABASE:-secunda}
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_TTL: ${JWT_TTL:-24h}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-120}
+      AUTH_RATE_LIMIT_RPM: ${AUTH_RATE_LIMIT_RPM:-10}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "secunda", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+
+  migrate:
+    build:
+      context: .
+      target: app
+    command: ["migrate"]
+    environment:
+      MYSQL_DSN: ${MYSQL_USER:-secunda}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@tcp(mysql:3306)/${MYSQL_DATABASE:-secunda}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  mysql:
+    build:
+      context: .
+      dockerfile: Dockerfile.mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-secunda}
+      MYSQL_USER: ${MYSQL_USER:-secunda}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u $$MYSQL_USER -D $$MYSQL_DATABASE -e 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.10.3-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  tests:
+    profiles: [test]
+    networks: [test]
+    build:
+      context: .
+      target: test
+    environment:
+      TEST_MYSQL_DSN: root:test@tcp(mysql-test:3306)/mysql
+      TEST_REDIS_ADDR: redis-test:6379
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+
+  mysql-test:
+    profiles: [test]
+    networks: [test]
+    build:
+      context: .
+      dockerfile: Dockerfile.mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_ROOT_HOST: "%"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=test mysql -h 127.0.0.1 -u root -e 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  redis-test:
+    profiles: [test]
+    networks: [test]
+    image: redis:8.10.3-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mysql-data:
+
+networks:
+  test:
+    internal: true

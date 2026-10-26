@@ -1,0 +1,4 @@
+FROM mysql:9.7.4
+RUN microdnf remove -y mysql-shell \
+    && microdnf upgrade -y ca-certificates \
+    && microdnf clean all
